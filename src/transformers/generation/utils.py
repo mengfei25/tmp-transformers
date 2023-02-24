@@ -684,7 +684,8 @@ class GenerationMixin:
     def _extract_past_from_model_output(self, outputs: ModelOutput, standardize_cache_format: bool = False):
         past_key_values = None
         # To use torch.jit.trace, the output is no longer a Dict. outputs[1] corresponds to "past_key_values"
-        past_key_values = outputs[1]        
+        if self.jit == True:
+            past_key_values = outputs[1]
         if "past_key_values" in outputs:
             past_key_values = outputs.past_key_values
         elif "mems" in outputs:
@@ -1177,7 +1178,7 @@ class GenerationMixin:
         """
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
         self._validate_model_class()
-
+        self.jit = kwargs.pop("jit", False)
         # priority: `generation_config` argument > `model.generation_config` (the default generation config)
         if generation_config is None:
             # legacy: users may modify the model configuration to control generation -- update the generation config
@@ -2720,8 +2721,7 @@ class GenerationMixin:
                     break
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
-            if model_inputs["past_key_values"] is None:
+            if model_inputs["past_key_values"] is None or self.jit == False:
                 outputs = self(
                     **model_inputs,
                     return_dict=True,
