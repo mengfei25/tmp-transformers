@@ -2726,8 +2726,8 @@ class GenerationMixin:
                 if first_token: 
                     input_bs = input_ids.size()[0]
                     seq_len = input_ids.size()[1]
-                    model_inputs["attention_mask"] = model_inputs["attention_mask"][0]
-                    model_inputs["input_ids"] = model_inputs["input_ids"][0]
+                    model_inputs["attention_mask"] = model_inputs["attention_mask"][:1,:]
+                    model_inputs["input_ids"] = model_inputs["input_ids"][:1,:]
                 outputs = self(
                     **model_inputs,
                     return_dict=True,
@@ -2738,10 +2738,14 @@ class GenerationMixin:
                     outputs.logits = outputs.logits.expand(input_bs, seq_len, -1)
                     past_key_values = []
                     for key, value in outputs["past_key_values"]:
-                        new_key_shape =  (input_bs, ) + key.size()[1:]
-                        new_val_shape = (input_bs, ) + value.size()[1:]
-                        key = key.expand(new_key_shape).contiguous()
-                        value = value.expand(new_val_shape).contiguous()
+                        key_dim = key.dim()
+                        value_dim = value.dim()
+                        key = key.expand(input_bs, -1, -1, -1).contiguous()
+                        value = value.expand(input_bs, -1, -1, -1).contiguous()
+                        if key_dim == 3:
+                            key = key.view(key.size(1) * key.size(0), key.size(2), key.size(3))
+                        if value_dim == 3:
+                            value = value.view(value.size(1) * value.size(0), value.size(2), value.size(3))
                         past_key_values.append(tuple([key, value]))
                     outputs.past_key_values = tuple(past_key_values)
                 if synced_gpus and this_peer_finished:
