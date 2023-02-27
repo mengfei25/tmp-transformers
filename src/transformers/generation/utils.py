@@ -1104,6 +1104,10 @@ class GenerationMixin:
         stopping_criteria: Optional[StoppingCriteriaList] = None,
         prefix_allowed_tokens_fn: Optional[Callable[[int, torch.Tensor], List[int]]] = None,
         synced_gpus: Optional[bool] = False,
+        do_calibration: Optional[bool] = False,
+        ipex_int8: Optional[bool] = False,
+        amp_enabled: Optional[bool] = False,
+        saved_quant_model: Optional[str] = "./quant_gptj.pt",
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -1179,6 +1183,11 @@ class GenerationMixin:
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
         self._validate_model_class()
         self.jit = kwargs.pop("jit", False)
+        self.do_calibration = do_calibration
+        self.amp_enabled = amp_enabled
+        self.ipex_int8 = ipex_int8
+        self.saved_quant_model = saved_quant_model
+
         # priority: `generation_config` argument > `model.generation_config` (the default generation config)
         if generation_config is None:
             # legacy: users may modify the model configuration to control generation -- update the generation config
@@ -2760,7 +2769,30 @@ class GenerationMixin:
                         example_inputs.append(v)
                 example_inputs = tuple(example_inputs)                
 
-                if not hasattr(self,"trace_graph"):
+                if  self.do_calibration:
+                    import intel_extension_for_pytorch as ipex
+                    from intel_extension_for_pytorch.quantization import prepare, convert
+                    from torch.ao.quantization import MinMaxObserver, PerChannelMinMaxObserver, QConfig
+                    qconfig = QConfig(activation=MinMaxObserver.with_args(qscheme=torch.per_tensor_affine, dtype=torch.quint8), weight=PerChannelMinMaxObserver.with_args(dtype=torch.qint8, qscheme=torch.per_channel_symmetric))
+                    ipex.nn.utils._model_convert.replace_dropout_with_identity(self)
+                    prepared_model = prepare(self.eval(), qconfig, example_inputs=example_inputs)
+                    for nbatch in range(1):
+                      prepared_model(*example_inputs)
+                    with torch.cpu.amp.autocast(enabled=self.amp_enabled), torch.no_grad():
+                      convert_model = convert(prepared_model.eval()).eval()
+                      self_jit = torch.jit.trace(convert_model.eval(), example_inputs, strict=False)
+                      self_jit = torch.jit.freeze(self_jit.eval())
+                      self_jit(*example_inputs)
+                      self_jit(*example_inputs)
+                      self_jit.save(self.saved_quant_model)
+                    exit(0)
+
+                if not hasattr(self,"trace_graph") and self.jit and self.ipex_int8:
+                    self_jit = torch.jit.load(self.saved_quant_model)
+                    self_jit = torch.jit.freeze(self_jit.eval())
+                    setattr(self, "trace_graph", self_jit)
+
+                if not hasattr(self,"trace_graph") and self.jit and not self.ipex_int8:
                     self_jit = torch.jit.trace(self, example_inputs, strict=False)
                     self_jit = torch.jit.freeze(self_jit.eval())
                     setattr(self, "trace_graph", self_jit)
