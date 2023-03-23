@@ -17,6 +17,7 @@
 import copy
 import inspect
 import re
+import time
 import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -2126,6 +2127,7 @@ class GenerationMixin:
         ["It might be possible to get a better understanding of the nature of the problem, but it's not"]
         ```"""
         # init values
+        latency_list = []
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
         if max_length is not None:
@@ -2170,6 +2172,7 @@ class GenerationMixin:
 
         this_peer_finished = False  # used by synced_gpus only
         while True:
+            tic = time.time()
             if synced_gpus:
                 # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
                 # The following logic allows an early break if all peers finished generating their sequence
@@ -2237,6 +2240,7 @@ class GenerationMixin:
                 unfinished_sequences = unfinished_sequences.mul((sum(next_tokens != i for i in eos_token_id)).long())
 
             # stop when each sentence is finished, or if we exceed the maximum length
+            latency_list.append(time.time() - tic)
             if unfinished_sequences.max() == 0 or stopping_criteria(input_ids, scores):
                 if not synced_gpus:
                     break
@@ -2253,16 +2257,16 @@ class GenerationMixin:
                     decoder_attentions=decoder_attentions,
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                )
+                ), latency_list
             else:
                 return GreedySearchDecoderOnlyOutput(
                     sequences=input_ids,
                     scores=scores,
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
-                )
+                ), latency_list
         else:
-            return input_ids
+            return input_ids, latency_list
 
     def sample(
         self,
@@ -2653,6 +2657,7 @@ class GenerationMixin:
         ['Wie alt bist du?']
         ```"""
         # init values
+        latency_list = []
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
         if max_length is not None:
@@ -2715,6 +2720,7 @@ class GenerationMixin:
 
         this_peer_finished = False  # used by synced_gpus only
         while True:
+            tic = time.time()
             if synced_gpus:
                 # Under synced_gpus the `forward` call must continue until all gpus complete their sequence.
                 # The following logic allows an early break if all peers finished generating their sequence
@@ -2909,6 +2915,7 @@ class GenerationMixin:
 
             # increase cur_len
             cur_len = cur_len + 1
+            latency_list.append(time.time() - tic)
 
             if beam_scorer.is_done or stopping_criteria(input_ids, scores):
                 if not synced_gpus:
@@ -2942,7 +2949,7 @@ class GenerationMixin:
                     decoder_attentions=decoder_attentions,
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                )
+                ), latency_list
             else:
                 return BeamSearchDecoderOnlyOutput(
                     sequences=sequence_outputs["sequences"],
@@ -2951,9 +2958,9 @@ class GenerationMixin:
                     beam_indices=sequence_outputs["beam_indices"],
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
-                )
+                ), latency_list
         else:
-            return sequence_outputs["sequences"]
+            return sequence_outputs["sequences"], latency_list
 
     def beam_sample(
         self,
