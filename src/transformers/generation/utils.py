@@ -2801,7 +2801,10 @@ class GenerationMixin:
                     next_token_logits = outputs[0][:, -1, :]
             else:
                 if model_inputs["past_key_values"] is None or self.jit == False:
-                    first_token = model_inputs["input_ids"].size()[1] != 1
+                    if re.search("T5", self.config.architectures[0]):
+                        first_token = False
+                    else:
+                        first_token = model_inputs["input_ids"].size()[1] != 1
                     if first_token: 
                         input_bs = input_ids.size()[0]
                         seq_len = input_ids.size()[1]
