@@ -1184,6 +1184,7 @@ class GenerationMixin:
         self.quantized_model_path = kwargs.pop("quantized_model_path", None)
         self.ipex_int8 = kwargs.pop("ipex_int8", False)
         self.tp_number = kwargs.pop("TP_number", 1)
+        self.token_latency = kwargs.pop("token_latency", None)
 
         # priority: `generation_config` argument > `model.generation_config` (the default generation config)
         if generation_config is None:
@@ -2249,7 +2250,7 @@ class GenerationMixin:
 
         if return_dict_in_generate:
             if self.config.is_encoder_decoder:
-                return GreedySearchEncoderDecoderOutput(
+                output_result = GreedySearchEncoderDecoderOutput(
                     sequences=input_ids,
                     scores=scores,
                     encoder_attentions=encoder_attentions,
@@ -2257,16 +2258,21 @@ class GenerationMixin:
                     decoder_attentions=decoder_attentions,
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                ), latency_list
+                )
             else:
-                return GreedySearchDecoderOnlyOutput(
+                output_result = GreedySearchDecoderOnlyOutput(
                     sequences=input_ids,
                     scores=scores,
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
-                ), latency_list
+                )
         else:
-            return input_ids, latency_list
+            output_result = input_ids
+
+        if self.token_latency is not None:
+            return (output_result, latency_list)
+        else:
+            return output_result
 
     def sample(
         self,
@@ -2942,7 +2948,7 @@ class GenerationMixin:
                 sequence_outputs["sequence_scores"] = None
 
             if self.config.is_encoder_decoder:
-                return BeamSearchEncoderDecoderOutput(
+                output_result = BeamSearchEncoderDecoderOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
@@ -2952,18 +2958,23 @@ class GenerationMixin:
                     decoder_attentions=decoder_attentions,
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
-                ), latency_list
+                )
             else:
-                return BeamSearchDecoderOnlyOutput(
+                output_result = BeamSearchDecoderOnlyOutput(
                     sequences=sequence_outputs["sequences"],
                     sequences_scores=sequence_outputs["sequence_scores"],
                     scores=scores,
                     beam_indices=sequence_outputs["beam_indices"],
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
-                ), latency_list
+                )
         else:
-            return sequence_outputs["sequences"], latency_list
+            output_result = sequence_outputs["sequences"]
+        # result
+        if self.token_latency is not None:
+            return (output_result, latency_list)
+        else:
+            return output_result
 
     def beam_sample(
         self,
