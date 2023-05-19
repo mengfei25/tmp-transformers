@@ -1181,8 +1181,6 @@ class GenerationMixin:
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
         self._validate_model_class()
         self.jit = kwargs.pop("jit", False)
-        self.quantized_model_path = kwargs.pop("quantized_model_path", None)
-        self.ipex_int8 = kwargs.pop("ipex_int8", False)
         self.tp_number = kwargs.pop("TP_number", 1)
         self.token_latency = kwargs.pop("token_latency", None)
 
@@ -2738,124 +2736,67 @@ class GenerationMixin:
                     break
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            if re.search("GPTJ", self.config.architectures[0]):
-                if self.jit == False:
-                    outputs = self(
-                        **model_inputs,
-                        return_dict=True,
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        )
-                    if synced_gpus and this_peer_finished:
-                        cur_len = cur_len + 1
-                        continue  # don't waste resources running the code we don't need
-                    next_token_logits = outputs.logits[:, -1, :]
-                else:
-                    first_token = False
-                    input_bs = input_ids.size()[0]
-                    if model_inputs["past_key_values"] is None:
-                        first_token = True
-                    if first_token:
-                        seq_len = input_ids.size()[1]
-                        model_inputs["past_key_values"] = tuple([(torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)]), torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)])) for i in range(self.config.n_layer)])
-                        model_inputs["attention_mask"] = model_inputs["attention_mask"][:1,:]
-                        model_inputs["input_ids"] = model_inputs["input_ids"][:1,:]
-                        model_inputs["position_ids"] = model_inputs["position_ids"][:1,:]
-                        model_inputs["attention_mask"] = torch.cat([torch.zeros(1, 1), model_inputs["attention_mask"]], dim=-1)
-                    else:
-                        model_inputs["attention_mask"] = torch.cat([torch.zeros(input_bs, 1), model_inputs["attention_mask"]], dim=-1)
-                    model_inputs.pop("use_cache", None)
-                    model_inputs.pop("token_type_ids", None)
-
-                    if not hasattr(self, "trace_graph") and self.jit and self.ipex_int8:
-                        print("load_int8_model")
-                        self_jit = torch.jit.load(self.quantized_model_path)
-                        self_jit = torch.jit.freeze(self_jit.eval())
-                        setattr(self, "trace_graph", self_jit)
-                    if not hasattr(self,"trace_graph") and self.jit and not self.ipex_int8:
-                        example_inputs = []
-                        for k, v in model_inputs.items():
-                            if v is not None and not isinstance(v, bool):
-                                example_inputs.append(v)
-                        example_inputs = tuple(example_inputs)                  
-                        self_jit = torch.jit.trace(self, example_inputs, strict=False)
-                        self_jit = torch.jit.freeze(self_jit.eval())
-                        setattr(self, "trace_graph", self_jit)
-                    outputs = self.trace_graph(**model_inputs)
-                    if synced_gpus and this_peer_finished:
-                        cur_len = cur_len + 1
-                        continue  # don't waste resources running the code we don't need
-                    if first_token:
-                        outputs = list(outputs)
-                        outputs[0] = outputs[0].expand(input_bs, -1, -1)
-                        past_key_values = []
-                        for key, value in outputs[1]:
-                            key_dim = key.dim()
-                            value_dim = value.dim()
-                            key = key.expand(input_bs, -1, -1, -1).contiguous()
-                            value = value.expand(input_bs, -1, -1, -1).contiguous()
-                            if key_dim == 3:
-                                key = key.view(key.size(1) * key.size(0), key.size(2), key.size(3))
-                            if value_dim == 3:
-                                value = value.view(value.size(1) * value.size(0), value.size(2), value.size(3))
-                            past_key_values.append(tuple([key, value]))
-                        outputs[1] = tuple(past_key_values)
-                        outputs = tuple(outputs)
-                    if synced_gpus and this_peer_finished:
-                        cur_len = cur_len + 1
-                        continue  # don't waste resources running the code we don't need
-                    next_token_logits = outputs[0][:, -1, :]
-            else:
-                if model_inputs["past_key_values"] is None or self.jit == False:
-                    if re.search("T5", self.config.architectures[0]):
-                        first_token = False
-                    else:
-                        first_token = model_inputs["input_ids"].size()[1] != 1
-                    if first_token: 
-                        input_bs = input_ids.size()[0]
-                        seq_len = input_ids.size()[1]
-                        model_inputs["attention_mask"] = model_inputs["attention_mask"][:1,:]
-                        model_inputs["input_ids"] = model_inputs["input_ids"][:1,:]
-                    outputs = self(
-                        **model_inputs,
-                        return_dict=True,
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
+            if self.jit == False:
+                outputs = self(
+                    **model_inputs,
+                    return_dict=True,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
                     )
-                    if first_token: 
-                        outputs.logits = outputs.logits.expand(input_bs, seq_len, -1)
-                        past_key_values = []
-                        for key, value in outputs["past_key_values"]:
-                            key_dim = key.dim()
-                            value_dim = value.dim()
-                            key = key.expand(input_bs, -1, -1, -1).contiguous()
-                            value = value.expand(input_bs, -1, -1, -1).contiguous()
-                            if key_dim == 3:
-                                key = key.view(key.size(1) * key.size(0), key.size(2), key.size(3))
-                            if value_dim == 3:
-                                value = value.view(value.size(1) * value.size(0), value.size(2), value.size(3))
-                            past_key_values.append(tuple([key, value]))
-                        outputs.past_key_values = tuple(past_key_values)
-                    if synced_gpus and this_peer_finished:
-                        cur_len = cur_len + 1
-                        continue  # don't waste resources running the code we don't need               
-                    next_token_logits = outputs.logits[:, -1, :]          
+                if synced_gpus and this_peer_finished:
+                    cur_len = cur_len + 1
+                    continue  # don't waste resources running the code we don't need
+                next_token_logits = outputs.logits[:, -1, :]
+            else:
+                first_token = False
+                input_bs = input_ids.size()[0]
+                if model_inputs["past_key_values"] is None:
+                    first_token = True
+                if first_token:
+                    seq_len = input_ids.size()[1]
+                    model_inputs["past_key_values"] = tuple([(torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)]), torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)])) for i in range(self.config.n_layer)])
+                    model_inputs["attention_mask"] = model_inputs["attention_mask"][:1,:]
+                    model_inputs["input_ids"] = model_inputs["input_ids"][:1,:]
+                    model_inputs["position_ids"] = model_inputs["position_ids"][:1,:]
+                    model_inputs["attention_mask"] = torch.cat([torch.zeros(1, 1), model_inputs["attention_mask"]], dim=-1)
                 else:
+                    model_inputs["attention_mask"] = torch.cat([torch.zeros(input_bs, 1), model_inputs["attention_mask"]], dim=-1)
+                model_inputs.pop("use_cache", None)
+                model_inputs.pop("token_type_ids", None)
+
+                if not hasattr(self,"trace_graph") and self.jit:
                     example_inputs = []
                     for k, v in model_inputs.items():
                         if v is not None and not isinstance(v, bool):
                             example_inputs.append(v)
-                    example_inputs = tuple(example_inputs)
-                    if not hasattr(self,"trace_graph") and self.jit and not self.ipex_int8:
-                        self_jit = torch.jit.trace(self, example_inputs, strict=False)
-                        self_jit = torch.jit.freeze(self_jit.eval())
-                        setattr(self, "trace_graph", self_jit)
-
-                    outputs = self.trace_graph(*example_inputs)
-                    if synced_gpus and this_peer_finished:
-                        cur_len = cur_len + 1
-                        continue  # don't waste resources running the code we don't need
-                    next_token_logits = outputs[0][:, -1, :]               
+                    example_inputs = tuple(example_inputs)                  
+                    self_jit = torch.jit.trace(self, example_inputs, strict=False)
+                    self_jit = torch.jit.freeze(self_jit.eval())
+                    setattr(self, "trace_graph", self_jit)
+                outputs = self.trace_graph(**model_inputs)
+                if synced_gpus and this_peer_finished:
+                    cur_len = cur_len + 1
+                    continue  # don't waste resources running the code we don't need
+                if first_token:
+                    outputs = list(outputs)
+                    outputs[0] = outputs[0].expand(input_bs, -1, -1)
+                    past_key_values = []
+                    for key, value in outputs[1]:
+                        key_dim = key.dim()
+                        value_dim = value.dim()
+                        key = key.expand(input_bs, -1, -1, -1).contiguous()
+                        value = value.expand(input_bs, -1, -1, -1).contiguous()
+                        if key_dim == 3:
+                            key = key.view(key.size(1) * key.size(0), key.size(2), key.size(3))
+                        if value_dim == 3:
+                            value = value.view(value.size(1) * value.size(0), value.size(2), value.size(3))
+                        past_key_values.append(tuple([key, value]))
+                    outputs[1] = tuple(past_key_values)
+                    outputs = tuple(outputs)
+                if synced_gpus and this_peer_finished:
+                    cur_len = cur_len + 1
+                    continue  # don't waste resources running the code we don't need
+                next_token_logits = outputs[0][:, -1, :]
             # hack: adjust tokens for Marian. For Marian we have to make sure that the `pad_token_id`
             # cannot be generated both before and after the `nn.functional.log_softmax` operation.
             next_token_logits = self.adjust_logits_during_generation(next_token_logits, cur_len=cur_len)
