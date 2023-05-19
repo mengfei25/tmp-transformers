@@ -1183,6 +1183,7 @@ class GenerationMixin:
         self.jit = kwargs.pop("jit", False)
         self.tp_number = kwargs.pop("TP_number", 1)
         self.token_latency = kwargs.pop("token_latency", None)
+        self.use_tpp = kwargs.pop("use_tpp", False)
 
         # priority: `generation_config` argument > `model.generation_config` (the default generation config)
         if generation_config is None:
@@ -2754,7 +2755,10 @@ class GenerationMixin:
                     first_token = True
                 if first_token:
                     seq_len = input_ids.size()[1]
-                    model_inputs["past_key_values"] = tuple([(torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)]), torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)])) for i in range(self.config.n_layer)])
+                    if self.use_tpp:
+                        model_inputs["past_key_values"] = tuple([(torch.zeros([1,1,int(self.config.n_head/self.tp_number)*int(self.config.n_embd/self.config.n_head)]), torch.zeros([1,1,int(self.config.n_head/self.tp_number)*int(self.config.n_embd/self.config.n_head)])) for i in range(self.config.n_layer)])
+                    else:
+                        model_inputs["past_key_values"] = tuple([(torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)]), torch.zeros([1,int(self.config.n_head/self.tp_number),1,int(self.config.n_embd/self.config.n_head)])) for i in range(self.config.n_layer)])
                     model_inputs["attention_mask"] = model_inputs["attention_mask"][:1,:]
                     model_inputs["input_ids"] = model_inputs["input_ids"][:1,:]
                     model_inputs["position_ids"] = model_inputs["position_ids"][:1,:]
